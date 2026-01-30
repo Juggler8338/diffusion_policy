@@ -19,41 +19,51 @@ keypoint_visible_rate: 1.0
 obs_as_cond: True
 
 policy:
-  _target_: diffusion_policy.policy.diffusion_transformer_hybrid_image_policy.DiffusionTransformerHybridImagePolicy
+  # 1. 修改 Target 指向你新创建的 Python 文件和类
+  # 新文件保存为 ICT/policy/diffusion_transformer_ode_policy.py
+  _target_: ICT.policy.ICT_ode_policy.ICTPolicy
 
   shape_meta: ${shape_meta}
   
   noise_scheduler:
+    # 2. Scheduler 配置
+    # 尽管我们在代码中手动实现了 Euler 积分，这里保留 DDPMScheduler 是为了兼容 __init__ 函数的类型检查。
+    # 这里的配置实际上主要充当参数容器。
     _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
     num_train_timesteps: 100
     beta_start: 0.0001
     beta_end: 0.02
     beta_schedule: squaredcos_cap_v2
-    variance_type: fixed_small # Yilun's paper uses fixed_small_log instead, but easy to cause Nan
-    clip_sample: True # required when predict_epsilon=False
-    prediction_type: epsilon # or sample
+    variance_type: fixed_small
+    clip_sample: True
+    # 建议改为 v_prediction 以符合 Flow Matching 的语义 (预测速度 v)，
+    # 虽然上一轮提供的代码强制使用了 velocity loss，忽略了这个配置，但改过来更规范。
+    prediction_type: v_prediction 
 
   horizon: ${horizon}
   n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}
   n_obs_steps: ${n_obs_steps}
-  num_inference_steps: 100
+  
+  # 3. 关键修改：大幅降低推理步数
+  # ODE/Flow Matching 的优势是可以使用很少的步数 (如 10 步) 完成生成
+  # 原来的 100 步在这里是没必要的浪费
+  num_inference_steps: 10
 
+  # --- 以下参数保持原样 ---
   crop_shape: [76, 76]
   obs_encoder_group_norm: True
   eval_fixed_crop: True
 
   n_layer: 8
-  n_cond_layers: 0  # >0: use transformer encoder for cond, otherwise use MLP
+  n_cond_layers: 0
   n_head: 4
-  n_emb: 256
+  n_emb: 512
   p_drop_emb: 0.0
   p_drop_attn: 0.3
   causal_attn: True
-  time_as_cond: True # if false, use BERT like encoder only arch, time as input
+  time_as_cond: True
   obs_as_cond: ${obs_as_cond}
-
-  # scheduler.step params
-  # predict_epsilon: True
+  
 
 ema:
   _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
@@ -101,7 +111,7 @@ training:
   # in epochs
   rollout_every: 50
   checkpoint_every: 50
-  val_every: 1
+  val_every: 50
   sample_every: 5
   # steps per epoch
   max_train_steps: null
@@ -110,7 +120,7 @@ training:
   tqdm_interval_sec: 1.0
 
 logging:
-  project: diffusion_policy_debug
+  project: DiT_ode
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}

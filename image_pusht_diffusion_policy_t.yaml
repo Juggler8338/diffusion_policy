@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - task: lift_image_abs
+  # 移除了外部 task 加载，改为在下方直接定义
 
 name: train_diffusion_transformer_hybrid
 _target_: diffusion_policy.workspace.train_diffusion_transformer_hybrid_workspace.TrainDiffusionTransformerHybridWorkspace
@@ -9,7 +9,8 @@ task_name: ${task.name}
 shape_meta: ${task.shape_meta}
 exp_name: "default"
 
-horizon: 10
+# === 关键参数调整 ===
+horizon: 16  # PushT 任务标准视界长度（原 transformer 配置为 10，已修正为 16）
 n_obs_steps: 2
 n_action_steps: 8
 n_latency_steps: 0
@@ -18,6 +19,49 @@ past_action_visible: False
 keypoint_visible_rate: 1.0
 obs_as_cond: True
 
+# === 嵌入的 Task 配置 (来自 pusht_image.yaml) ===
+task:
+  name: pusht_image
+  image_shape: &image_shape [3, 96, 96]
+  shape_meta: &shape_meta
+    # acceptable types: rgb, low_dim
+    obs:
+      image:
+        shape: *image_shape
+        type: rgb
+      agent_pos:
+        shape: [2]
+        type: low_dim
+    action:
+      shape: [2]
+
+  env_runner:
+    _target_: diffusion_policy.env_runner.pusht_image_runner.PushTImageRunner
+    n_train: 6
+    n_train_vis: 2
+    train_start_seed: 0
+    n_test: 50
+    n_test_vis: 4
+    legacy_test: True
+    test_start_seed: 100000
+    max_steps: 300
+    n_obs_steps: ${n_obs_steps}
+    n_action_steps: ${n_action_steps}
+    fps: 10
+    past_action: ${past_action_visible}
+    n_envs: null
+
+  dataset:
+    _target_: diffusion_policy.dataset.pusht_image_dataset.PushTImageDataset
+    zarr_path: data/pusht/pusht_cchi_v7_replay.zarr
+    horizon: ${horizon}
+    pad_before: ${eval:'${n_obs_steps}-1'}
+    pad_after: ${eval:'${n_action_steps}-1'}
+    seed: 42
+    val_ratio: 0.02
+    max_train_episodes: 90
+
+# === Policy 配置 ===
 policy:
   _target_: diffusion_policy.policy.diffusion_transformer_hybrid_image_policy.DiffusionTransformerHybridImagePolicy
 
@@ -52,9 +96,7 @@ policy:
   time_as_cond: True # if false, use BERT like encoder only arch, time as input
   obs_as_cond: ${obs_as_cond}
 
-  # scheduler.step params
-  # predict_epsilon: True
-
+# === 训练与其他配置 ===
 ema:
   _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
   update_after_step: 0
@@ -64,14 +106,14 @@ ema:
   max_value: 0.9999
 
 dataloader:
-  batch_size: 128
+  batch_size: 64
   num_workers: 8
   shuffle: True
   pin_memory: True
   persistent_workers: False
 
 val_dataloader:
-  batch_size: 128
+  batch_size: 64
   num_workers: 8
   shuffle: False
   pin_memory: True

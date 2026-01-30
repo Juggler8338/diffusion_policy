@@ -29,7 +29,7 @@ logging:
   id: null
   mode: online
   name: 2023.01.16-20.20.06_train_diffusion_unet_hybrid_pusht_image
-  project: diffusion_policy_debug
+  project: dp-unet-pusht-image
   resume: true
   tags:
   - train_diffusion_unet_hybrid
@@ -169,11 +169,11 @@ training:
   num_epochs: 3050
   resume: true
   rollout_every: 50
-  sample_every: 5
+  sample_every: 50
   seed: 42
   tqdm_interval_sec: 1.0
   use_ema: true
-  val_every: 1
+  val_every: 50
 val_dataloader:
   batch_size: 64
   num_workers: 8
