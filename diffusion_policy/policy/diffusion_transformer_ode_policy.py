@@ -218,7 +218,12 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
             t_val = i / steps
             # Create time tensor for batch
             t = torch.full((B,), t_val, device=device, dtype=dtype)
-            
+            # === 修复开始 ===
+            # TransformerForDiffusion 期望 t 的输入范围和训练时一致（0-100）
+            # 这个常数应该与你原本 DDPM 训练时的步数一致，或者如果你是重头训练，选一个大一点的数(如 100.0 或 1000.0)
+            T_max = 100.0 
+            t_input = t * T_max 
+        # === 修复结束 ===
             # --- Inpainting / Conditioning Logic ---
             # If we have fixed conditions (like observations in the sequence),
             # we must enforce them to follow the straight line trajectory explicitly.
@@ -234,7 +239,7 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
             # Note: TransformerForDiffusion expects t to be handled appropriately.
             # If it uses sinusoidal embedding, feeding float 0-1 works but scale matters.
             # Often it's safer to pass t directly.
-            velocity_pred = model(trajectory, t, cond)
+            velocity_pred = model(trajectory, t_input, cond)
 
             # --- Euler Step ---
             # X_{t+1} = X_t + v * dt
@@ -414,7 +419,13 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
         
         # Predict the velocity
         # Pass t directly (model should handle float 0-1)
-        pred_v = self.model(x_t, t, cond)
+        # === 修复开始 ===
+        # 将 t (0-1) 映射到模型预期的范围 (例如 0-100)
+        # 这个常数应该与你原本 DDPM 训练时的步数一致，或者如果你是重头训练，选一个大一点的数(如 100.0 或 1000.0)
+        T_max = 100.0 
+        t_input = t * T_max 
+        # === 修复结束 ===
+        pred_v = self.model(x_t, t_input, cond)
 
         # MSE Loss on Velocity
         loss = F.mse_loss(pred_v, target_v, reduction='none')
