@@ -24,21 +24,6 @@ policy:
   _target_: ICT.policy.ICT_ode_policy.ICTPolicy
 
   shape_meta: ${shape_meta}
-  
-  noise_scheduler:
-    # 2. Scheduler 配置
-    # 尽管我们在代码中手动实现了 Euler 积分，这里保留 DDPMScheduler 是为了兼容 __init__ 函数的类型检查。
-    # 这里的配置实际上主要充当参数容器。
-    _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
-    num_train_timesteps: 100
-    beta_start: 0.0001
-    beta_end: 0.02
-    beta_schedule: squaredcos_cap_v2
-    variance_type: fixed_small
-    clip_sample: True
-    # 建议改为 v_prediction 以符合 Flow Matching 的语义 (预测速度 v)，
-    # 虽然上一轮提供的代码强制使用了 velocity loss，忽略了这个配置，但改过来更规范。
-    prediction_type: v_prediction 
 
   horizon: ${horizon}
   n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}

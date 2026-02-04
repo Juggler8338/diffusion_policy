@@ -36,12 +36,9 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
             time_as_cond=True,
             obs_as_cond=True,
             pred_action_steps_only=False,
-            prediction_type: str = 'v',  # 新增：'v', 'x1', or 'x0'
             **kwargs):
         super().__init__()
-        # parse prediction_type
-        self.prediction_type = prediction_type.lower()
-        assert self.prediction_type in ['v', 'x1', 'x0'], "prediction_type must be 'v', 'x1', or 'x0'"
+    
         # parse shape_meta
         action_shape = shape_meta['action']['shape']
         assert len(action_shape) == 1
@@ -164,17 +161,6 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
         if num_inference_steps is None:
             num_inference_steps = 30  # Heun 下 30 步足够高质量
         self.num_inference_steps = num_inference_steps
-    # ========= computation of v from different targets ============
-    def _get_pred_v(self, model_output, x_t, t_expand):
-        """统一接口：根据 prediction_type 将 model 输出转换为 v"""
-        if self.prediction_type == 'v':
-            return model_output
-        elif self.prediction_type == 'x1':
-            denom = (1 - t_expand).clamp(min=1e-8)
-            return (model_output - x_t) / denom
-        elif self.prediction_type == 'x0':
-            denom = t_expand.clamp(min=1e-8)
-            return (x_t - model_output) / denom
         
 # ========= inference (Heun 2nd-order ODE solver) ============
     def conditional_sample(self, 
@@ -194,32 +180,19 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
         for _ in range(self.num_inference_steps):
             t_tensor = torch.full((B,), t, device=device, dtype=dtype)
 
+            # 强制已知部分跟随理论直线路径
             if condition_mask.any():
                 x_t_known = t * condition_data + (1 - t) * x_0
                 trajectory[condition_mask] = x_t_known[condition_mask]
 
-            # 模型输出
-            model_output = model(trajectory, t_tensor, cond)
+            # 模型直接预测 velocity
+            v = model(trajectory, t_tensor, cond)
 
-            # 转换为 v1
-            t_expand = t_tensor.reshape(-1, 1, 1)
-            v1 = self._get_pred_v(model_output, trajectory, t_expand)
+            # Euler 一阶更新
+            trajectory = trajectory + v * dt
+            t = t + dt
 
-            x_mid = trajectory + v1 * dt
-            t_mid = t + dt
-            t_mid_tensor = torch.full((B,), t_mid, device=device, dtype=dtype)
-
-            if condition_mask.any():
-                x_mid_known = t_mid * condition_data + (1 - t_mid) * x_0
-                x_mid[condition_mask] = x_mid_known[condition_mask]
-
-            model_output_mid = model(x_mid, t_mid_tensor, cond)
-            t_mid_expand = t_mid_tensor.reshape(-1, 1, 1)
-            v2 = self._get_pred_v(model_output_mid, x_mid, t_mid_expand)
-
-            trajectory = trajectory + (v1 + v2) / 2 * dt
-            t = t_mid
-
+        # 最终强制 conditioned 部分为真实值
         trajectory[condition_mask] = condition_data[condition_mask]
         return trajectory
 
@@ -327,11 +300,7 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
         x_t[condition_mask] = x_1[condition_mask]
         
         # 模型前向（输出维度始终与 trajectory 相同）
-        model_output = self.model(x_t, t, cond)  # 这里统一叫 model_output
-
-        # 统一转换为 pred_v
-        t_expand = t.reshape(-1, 1, 1)
-        pred_v = self._get_pred_v(model_output, x_t, t_expand)
+        pred_v = self.model(x_t, t, cond)  
 
         loss = F.mse_loss(pred_v, target_v, reduction='none')
         loss = loss * loss_mask.type(loss.dtype)

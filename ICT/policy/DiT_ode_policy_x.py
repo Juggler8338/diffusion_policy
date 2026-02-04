@@ -1,4 +1,4 @@
-# DiT_ode_policy.py
+# DiT_ode_policy_pro.py
 from typing import Dict, Tuple
 import torch
 import torch.nn as nn
@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from einops import reduce
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
-from ICT.model.DiTModel_pro import TransformerForDiffusion
+from ICT.model.DiTModel_x import TransformerForDiffusion
 from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
 from diffusion_policy.common.robomimic_config_util import get_robomimic_config
 from robomimic.algo import algo_factory
@@ -161,10 +161,9 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
         self.kwargs = kwargs
 
         if num_inference_steps is None:
-            num_inference_steps = 30  # Heun 下 30 步足够高质量
+            num_inference_steps = 30  # Heun 下 30 步足够高质量（直线路径下可进一步减少）
         self.num_inference_steps = num_inference_steps
-
-    # ========= inference (Heun 2nd-order ODE solver) ============
+    # Euler 一阶采样
     def conditional_sample(self, 
             condition_data, condition_mask,
             cond=None,
@@ -174,34 +173,39 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
         device = condition_data.device
         dtype = condition_data.dtype
 
+        # 初始噪声（t=0 时 x_t = x_0）
         x_0 = torch.randn(size=condition_data.shape, dtype=dtype, device=device)
         trajectory = x_0.clone()
         dt = 1.0 / self.num_inference_steps
         t = 0.0
+        eps = 1e-5  # 防止 t→1 时除零
 
         for _ in range(self.num_inference_steps):
             t_tensor = torch.full((B,), t, device=device, dtype=dtype)
 
+            # 强制已知部分跟随理论直线路径
             if condition_mask.any():
                 x_t_known = t * condition_data + (1 - t) * x_0
                 trajectory[condition_mask] = x_t_known[condition_mask]
 
-            v1 = model(trajectory, t_tensor, cond)
+            # 模型直接预测目标 x_1
+            pred_target = model(trajectory, t_tensor, cond)
 
-            x_mid = trajectory + v1 * dt
-            t_mid = t + dt
-            t_mid_tensor = torch.full((B,), t_mid, device=device, dtype=dtype)
-
+            # 【推荐】Target anchoring：强制 conditioned 部分直接输出真实目标值
             if condition_mask.any():
-                x_mid_known = t_mid * condition_data + (1 - t_mid) * x_0
-                x_mid[condition_mask] = x_mid_known[condition_mask]
+                pred_target = pred_target * (~condition_mask) + condition_data * condition_mask
 
-            v2 = model(x_mid, t_mid_tensor, cond)
+            # 计算 velocity：v = (pred_x_1 - x_t) / (1 - t)
+            v = (pred_target - trajectory) / (1 - t + eps)
 
-            trajectory = trajectory + (v1 + v2) / 2 * dt
-            t = t_mid
+            # Euler 一阶更新
+            trajectory = trajectory + v * dt
+            t = t + dt
 
-        trajectory[condition_mask] = condition_data[condition_mask]
+        # 最终强制 conditioned 部分为真实值
+        if condition_mask.any():
+            trajectory[condition_mask] = condition_data[condition_mask]
+
         return trajectory
 
     def predict_action(self, obs_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -276,7 +280,7 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
         To = self.n_obs_steps
 
         cond = None
-        trajectory = nactions
+        trajectory = nactions  # x_1（目标）
         if self.obs_as_cond:
             this_nobs = dict_apply(nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
             nobs_features = self.obs_encoder(this_nobs)
@@ -301,14 +305,15 @@ class DiffusionTransformerODEPolicy(BaseImagePolicy):
         t = torch.rand((batch_size,), device=x_1.device, dtype=x_1.dtype)
         t_expand = t.reshape(-1, 1, 1)
         x_t = t_expand * x_1 + (1 - t_expand) * x_0
-        target_v = x_1 - x_0
+
+        # 训练时强制 conditioned 部分为真实目标值（与原代码一致）
+        x_t[condition_mask] = x_1[condition_mask]
+
+        # 模型直接预测目标 x_1
+        pred_target = self.model(x_t, t, cond)
 
         loss_mask = ~condition_mask
-        x_t[condition_mask] = x_1[condition_mask]
-        
-        pred_v = self.model(x_t, t, cond)
-
-        loss = F.mse_loss(pred_v, target_v, reduction='none')
+        loss = F.mse_loss(pred_target, x_1, reduction='none')
         loss = loss * loss_mask.type(loss.dtype)
         loss = reduce(loss, 'b ... -> b (...)', 'mean')
         loss = loss.mean()

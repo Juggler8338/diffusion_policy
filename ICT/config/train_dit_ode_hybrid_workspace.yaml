@@ -20,7 +20,7 @@ obs_as_cond: True
 
 policy:
   # 指向新的 ODE/Flow Matching 版本的 Policy 类
-  _target_: ICT.policy.DiT_ode_policy.DiffusionTransformerODEPolicy
+  _target_: ICT.policy.DiT_ode_policy_x.DiffusionTransformerODEPolicy
 
   shape_meta: ${shape_meta}
   

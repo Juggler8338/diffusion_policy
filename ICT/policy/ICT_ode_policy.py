@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, reduce
-from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
@@ -21,7 +20,6 @@ from diffusion_policy.common.pytorch_util import dict_apply, replace_submodules
 class ICTPolicy(BaseImagePolicy):
     def __init__(self, 
             shape_meta: dict,
-            noise_scheduler: DDPMScheduler,
             # task params
             horizon, 
             n_action_steps, 

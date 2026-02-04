@@ -2,7 +2,6 @@ from typing import Union, Optional, Tuple
 import logging
 import torch
 import torch.nn as nn
-from diffusion_policy.model.diffusion.positional_embedding import SinusoidalPosEmb
 from diffusion_policy.model.common.module_attr_mixin import ModuleAttrMixin
 
 logger = logging.getLogger(__name__)
@@ -11,6 +10,17 @@ def modulate(x, shift, scale):
     """标准的 AdaLN 调制函数"""
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
+class GaussianFourierProjection(nn.Module):
+    def __init__(self, embed_dim: int, scale: float = 2.0 * torch.pi):
+        super().__init__()
+        self.W = nn.Parameter(torch.randn(1, embed_dim // 2) * scale, requires_grad=False)
+
+    def forward(self, x):
+        if x.ndim == 0:
+            x = x.unsqueeze(0)
+        x_proj = x[:, None] * self.W
+        return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
+    
 class DiTBlock(nn.Module):
     def __init__(self, n_emb, n_head, p_drop_attn):
         super().__init__()
@@ -72,7 +82,7 @@ class TransformerForDiffusion(ModuleAttrMixin):
         self.drop = nn.Dropout(p_drop_emb)
 
         # Time Embedding (作为 Global AdaLN condition)
-        self.time_emb = SinusoidalPosEmb(n_emb)
+        self.time_emb = GaussianFourierProjection(n_emb)
         
         # In-Context Token (ICT) Configuration
         self.cond_dim = cond_dim
