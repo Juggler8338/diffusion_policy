@@ -2,54 +2,54 @@ defaults:
   - _self_
   - task: lift_image_abs
 
-name: train_diffusion_transformer_hybrid
+name: train_hybrid_dit_flow
 _target_: diffusion_policy.workspace.train_diffusion_transformer_hybrid_workspace.TrainDiffusionTransformerHybridWorkspace
 
 task_name: ${task.name}
 shape_meta: ${task.shape_meta}
-exp_name: "default"
+exp_name: "hybrid_dit_beta"
 
-horizon: 10
+horizon: 16       # 建议：DiT 通常能处理更长的 horizon，可以尝试从 10 增加到 16
 n_obs_steps: 2
 n_action_steps: 8
 n_latency_steps: 0
 dataset_obs_steps: ${n_obs_steps}
 past_action_visible: False
 keypoint_visible_rate: 1.0
-obs_as_cond: True
 
 policy:
-  # 指向新的 ODE/Flow Matching 版本的 Policy 类
-  _target_: ICT.policy.DiT_ode_policy.DiffusionTransformerODEPolicy
+  # [修改点 1] 指向你新保存的 Policy 文件和类名
+  # 假设你把代码保存到了 ICT/policy/HybridDiT_policy.py
+  _target_: ICT.policy.HybridDiT_policy.HybridDiTPolicy
 
   shape_meta: ${shape_meta}
   
-  # 注意：noise_scheduler 参数已被完全移除（Flow Matching 不需要 DDPMScheduler）
-  # 所有加噪/调度逻辑已由代码内部的 Rectified Flow 实现取代
-
   horizon: ${horizon}
   n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}
   n_obs_steps: ${n_obs_steps}
   
-  # ODE 采样优势：步数可以非常少
-  # Heun 二阶采样器下 30 步已足够高质量（可根据实验调整 20~50）
-  num_inference_steps: 30
+  # --- Flow Matching 推理参数 ---
+  num_inference_steps: 100        # Euler 积分器建议 100 步以获得高精度，或者 50 步追求速度
+  training_noise_sampling: "beta" # [强烈推荐] 使用 "beta" 分布采样 t (Pi0 论文做法)，通常比 "uniform" 收敛更快且效果更好
+  time_dim: 256
+  clip_sample: True               # 建议开启，防止推理时数值溢出
+  clip_sample_range: 1.0
 
-  # --- 以下参数保持原样 ---
+  # --- Hybrid DiT 架构参数 ---
+  # [修改点 2] 核心 DiT 结构
+  n_layer: 8        # 建议加深网络，DiT 一般比 UNet 深
+  n_head: 8           # 确保 n_emb 能被 n_head 整除 (512/8 = 64 dim per head)
+  n_emb: 256          # 512 是一个很好的起点，显存够可以用 768
+  p_drop_emb: 0.1
+  p_drop_attn: 0.1    # Attention Dropout 有助于防止过拟合
+  
+  # [修改点 3] 新增参数：Condition Encoder 深度
+  n_cond_layers: 2    # 2 层 Transformer Encoder 用于处理历史观测序列通常足够了
+
+  # --- 视觉 Encoder 参数 (保持不变) ---
   crop_shape: [76, 76]
   obs_encoder_group_norm: True
   eval_fixed_crop: True
-
-  n_layer: 8
-  n_cond_layers: 0
-  n_head: 4
-  n_emb: 512
-  p_drop_emb: 0.0
-  p_drop_attn: 0.3
-  causal_attn: True
-  time_as_cond: True
-  obs_as_cond: ${obs_as_cond}
-  
 
 ema:
   _target_: diffusion_policy.model.diffusion.ema_model.EMAModel
@@ -60,7 +60,7 @@ ema:
   max_value: 0.9999
 
 dataloader:
-  batch_size: 128
+  batch_size: 128      # 如果显存不足，可能需要从 128 降到 64，因为 Cross-Attention 增加了计算量
   num_workers: 8
   shuffle: True
   pin_memory: True
@@ -75,8 +75,8 @@ val_dataloader:
 
 optimizer:
   transformer_weight_decay: 1.0e-3
-  obs_encoder_weight_decay: 1.0e-6
-  learning_rate: 2.0e-4
+  obs_encoder_weight_decay: 1.0e-5 # 稍微增加一点 vision encoder 的正则化
+  learning_rate: 3.0e-4            # DiT 通常可以承受稍大的 LR (例如 3e-4)
   betas: [0.9, 0.95]
 
 training:
@@ -84,33 +84,25 @@ training:
   seed: 42
   debug: False
   resume: True
-  # optimization
   lr_scheduler: cosine
-  # Transformer needs LR warmup
-  lr_warmup_steps: 1000
+  lr_warmup_steps: 500             # DiT 需要预热，500-1000 步合适
   num_epochs: 3050
   gradient_accumulate_every: 1
-  # EMA destroys performance when used with BatchNorm
-  # replace BatchNorm with GroupNorm.
   use_ema: True
-  # training loop control
-  # in epochs
   rollout_every: 50
   checkpoint_every: 50
   val_every: 1
   sample_every: 5
-  # steps per epoch
   max_train_steps: null
   max_val_steps: null
-  # misc
   tqdm_interval_sec: 1.0
 
 logging:
-  project: DiT_ode
+  project: DiT_ode_hybrid
   resume: True
   mode: online
   name: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
-  tags: ["${name}", "${task_name}", "${exp_name}"]
+  tags: ["${name}", "${task_name}", "HybridDiT", "BetaSampling"]
   id: null
   group: null
 

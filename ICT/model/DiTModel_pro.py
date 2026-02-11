@@ -1,3 +1,7 @@
+# DiTModel.py
+# - 采用更细粒度的 AdaLN 调制（attn 和 mlp 分别有独立的 shift/scale/gate）
+# - 时间嵌入改为 learnable sinusoidal（_TimeNetwork）
+# - Final layer 采用 LeRobot 的 AdaLN 风格
 
 from typing import Union, Optional, Tuple
 import logging
@@ -30,6 +34,9 @@ class _TimeNetwork(nn.Module):
         t = torch.cat((torch.cos(t), torch.sin(t)), dim=1)
         return self.out_net(t)
     
+# 在 ICT/model/DiTModel_pro.py 中修复所有 modulation 层的广播维度
+# 因为我们使用 batch_first=True，序列维度在 dim=1，需要 unsqueeze(1) 而非 unsqueeze(0) 或 unsqueeze(-1)
+# 修改 _ShiftScaleMod
 class _ShiftScaleMod(nn.Module):
     def __init__(self, dim):
         super().__init__()
